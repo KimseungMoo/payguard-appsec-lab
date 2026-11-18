@@ -27,18 +27,40 @@ export interface TrafficEvent {
 
 const API_BASE = 'http://localhost:4000';
 
-// 혼합 트래픽 시퀀스: 다수의 일반 유저 요청 속에 기습적으로 끼어드는 해커의 IDOR 순회 공격
-const SIMULATION_STEPS = [
+interface TrafficStep {
+  actor: string;
+  token: string;
+  orderId: number;
+  isAttack: boolean;
+}
+
+const NORMAL_PROFILES: TrafficStep[] = [
   { actor: 'alice_kim', token: 'tok_alice_101', orderId: 1001, isAttack: false },
-  { actor: 'bob_lee', token: 'tok_bob_102', orderId: 1002, isAttack: false },
-  { actor: 'mallory_sec', token: 'tok_mallory_999', orderId: 1001, isAttack: true },
-  { actor: 'charlie_park', token: 'tok_charlie_103', orderId: 1003, isAttack: false },
-  { actor: 'mallory_sec', token: 'tok_mallory_999', orderId: 1002, isAttack: true },
   { actor: 'alice_kim', token: 'tok_alice_101', orderId: 1004, isAttack: false },
-  { actor: 'mallory_sec', token: 'tok_mallory_999', orderId: 1003, isAttack: true },
   { actor: 'bob_lee', token: 'tok_bob_102', orderId: 1002, isAttack: false },
-  { actor: 'mallory_sec', token: 'tok_mallory_999', orderId: 1004, isAttack: true },
+  { actor: 'charlie_park', token: 'tok_charlie_103', orderId: 1003, isAttack: false },
 ];
+
+const ATTACK_TARGET_ORDERS = [1001, 1002, 1003, 1004];
+
+// 실제 웹 트래픽과 유사한 포아송 분포 기반 지터(최소/최대 클램핑)
+function sampleExponentialDelay(meanMs: number, minMs: number, maxMs: number): number {
+  const raw = -Math.log(1 - Math.random()) * meanMs;
+  return Math.round(Math.min(maxMs, Math.max(minMs, raw)));
+}
+
+function randomBetween(minMs: number, maxMs: number): number {
+  return Math.round(minMs + Math.random() * (maxMs - minMs));
+}
+
+function formatTimeMs(iso: string): string {
+  const d = new Date(iso);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  const ms = String(d.getMilliseconds()).padStart(3, '0');
+  return `${hh}:${mm}:${ss}.${ms}`;
+}
 
 export function App() {
   const [defenseMode, setDefenseMode] = useState<DefenseMode>('v0.1-vulnerable');
@@ -93,9 +115,7 @@ export function App() {
     }
   };
 
-  // 1스텝 트래픽 발생 (Live API 연결 시 실제 HTTP 호출, 오프라인/Pages 시 결정적 시뮬레이션 생성)
-  const fireNextTrafficStep = async () => {
-    const step = SIMULATION_STEPS[stepIndexRef.current % SIMULATION_STEPS.length];
+  const dispatchTrafficStep = async (step: TrafficStep) => {
     stepIndexRef.current += 1;
 
     if (isLiveApiConnected) {
@@ -123,7 +143,7 @@ export function App() {
       wafAction: 'PASS',
       appAction: isExploited ? 'EXPLOITED' : isBlocked ? 'BLOCKED_GUARD' : 'ALLOWED',
       statusCode: isBlocked ? 404 : 200,
-      latencyMs: Math.floor(Math.random() * 5) + 3,
+      latencyMs: Math.floor(Math.random() * 6) + 2,
       impactDelta: {
         leakedOrders: isExploited ? 1 : 0,
         couponLossKrw: 0,
@@ -141,12 +161,80 @@ export function App() {
     setSelectedEvent((curr) => curr ?? synthetic);
   };
 
+  const fireRandomManualStep = () => {
+    const pickAttack = Math.random() < 0.35;
+    if (pickAttack) {
+      const targetOrder = ATTACK_TARGET_ORDERS[Math.floor(Math.random() * ATTACK_TARGET_ORDERS.length)];
+      void dispatchTrafficStep({
+        actor: 'mallory_sec',
+        token: 'tok_mallory_999',
+        orderId: targetOrder,
+        isAttack: true,
+      });
+    } else {
+      const normal = NORMAL_PROFILES[Math.floor(Math.random() * NORMAL_PROFILES.length)];
+      void dispatchTrafficStep(normal);
+    }
+  };
+
+  // 독립적인 2개의 비동기 루프: (1) 불규칙한 정상 유저 트래픽 (2) 간헐적 단발 프로브 또는 기습 연타 공격 버스트
   useEffect(() => {
     if (!isRunning) return;
-    const timer = setInterval(() => {
-      fireNextTrafficStep();
-    }, 650);
-    return () => clearInterval(timer);
+    let cancelled = false;
+    let normalTimer: ReturnType<typeof setTimeout> | null = null;
+    let attackTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const scheduleNormalUser = () => {
+      if (cancelled) return;
+      // 20% 확률로 동시 접속자 겹침(70~160ms), 평소엔 포아송 분포 기반 160~1500ms 랜덤 간격
+      const delay =
+        Math.random() < 0.2
+          ? randomBetween(70, 160)
+          : sampleExponentialDelay(520, 160, 1500);
+
+      normalTimer = setTimeout(() => {
+        if (cancelled) return;
+        const profile = NORMAL_PROFILES[Math.floor(Math.random() * NORMAL_PROFILES.length)];
+        void dispatchTrafficStep(profile);
+        scheduleNormalUser();
+      }, delay);
+    };
+
+    const scheduleAttacker = () => {
+      if (cancelled) return;
+      // 공격자는 1.4초 ~ 4.4초 불규칙하게 잠복하다가 기습 요청 발사
+      const cooldown = randomBetween(1400, 4400);
+      attackTimer = setTimeout(async () => {
+        if (cancelled) return;
+        const isBurst = Math.random() < 0.6; // 60% 확률로 2~4건 연속 순회(Enumeration Burst), 40% 단발 프로브
+        const burstCount = isBurst ? Math.floor(Math.random() * 3) + 2 : 1;
+        const startOffset = Math.floor(Math.random() * ATTACK_TARGET_ORDERS.length);
+
+        for (let i = 0; i < burstCount; i++) {
+          if (cancelled) break;
+          const orderId = ATTACK_TARGET_ORDERS[(startOffset + i) % ATTACK_TARGET_ORDERS.length];
+          void dispatchTrafficStep({
+            actor: 'mallory_sec',
+            token: 'tok_mallory_999',
+            orderId,
+            isAttack: true,
+          });
+          if (i < burstCount - 1) {
+            await new Promise((r) => setTimeout(r, randomBetween(65, 175)));
+          }
+        }
+        scheduleAttacker();
+      }, cooldown);
+    };
+
+    scheduleNormalUser();
+    scheduleAttacker();
+
+    return () => {
+      cancelled = true;
+      if (normalTimer) clearTimeout(normalTimer);
+      if (attackTimer) clearTimeout(attackTimer);
+    };
   }, [isRunning, defenseMode, isLiveApiConnected]);
 
   // 집계 지표 계산
@@ -239,7 +327,7 @@ export function App() {
           </button>
 
           <button
-            onClick={() => fireNextTrafficStep()}
+            onClick={fireRandomManualStep}
             style={{
               padding: '8px 12px',
               borderRadius: 6,
@@ -371,8 +459,9 @@ export function App() {
                     </div>
                     <div style={{ fontSize: 12, color: '#cbd5e1', marginTop: 4 }}>{ev.detail}</div>
                   </div>
-                  <span style={{ fontSize: 11, color: '#64748b', whiteSpace: 'nowrap' }}>
-                    {ev.latencyMs}ms
+                  <span style={{ fontSize: 11, color: '#64748b', whiteSpace: 'nowrap', textAlign: 'right' }}>
+                    <div>{formatTimeMs(ev.timestamp)}</div>
+                    <div>{ev.latencyMs}ms</div>
                   </span>
                 </div>
               );
