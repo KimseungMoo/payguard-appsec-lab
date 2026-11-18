@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { TacticalArena } from './components/TacticalArena';
 
 export type DefenseMode = 'v0.1-vulnerable' | 'v0.2-waf-only' | 'v0.3-patched';
 
@@ -93,7 +94,7 @@ function applyEventToMetrics(prev: TelemetryMetrics, ev: TrafficEvent): Telemetr
 export function App() {
   const [defenseMode, setDefenseMode] = useState<DefenseMode>('v0.1-vulnerable');
   const [isLiveApiConnected, setIsLiveApiConnected] = useState<boolean>(false);
-  const [isRunning, setIsRunning] = useState<boolean>(false);
+  const [isRunning, setIsRunning] = useState<boolean>(true);
   const [events, setEvents] = useState<TrafficEvent[]>([]);
   const [metrics, setMetrics] = useState<TelemetryMetrics>(EMPTY_METRICS);
   const [selectedEvent, setSelectedEvent] = useState<TrafficEvent | null>(null);
@@ -223,6 +224,22 @@ export function App() {
     } else {
       const normal = NORMAL_PROFILES[Math.floor(Math.random() * NORMAL_PROFILES.length)];
       void dispatchTrafficStep(normal);
+    }
+  };
+
+  const triggerAttackBurst = async () => {
+    const startOffset = Math.floor(Math.random() * ATTACK_TARGET_ORDERS.length);
+    for (let i = 0; i < 4; i++) {
+      const orderId = ATTACK_TARGET_ORDERS[(startOffset + i) % ATTACK_TARGET_ORDERS.length];
+      void dispatchTrafficStep({
+        actor: 'mallory_sec',
+        token: 'tok_mallory_999',
+        orderId,
+        isAttack: true,
+      });
+      if (i < 3) {
+        await new Promise((r) => setTimeout(r, randomBetween(60, 140)));
+      }
     }
   };
 
@@ -422,6 +439,18 @@ export function App() {
         />
       </div>
 
+      {/* Tactical Live Traffic Arena */}
+      <TacticalArena
+        defenseMode={defenseMode}
+        latestEvent={events[0] ?? null}
+        totalLeakedOrders={totalLeakedOrders}
+        normalTotal={normalTotal}
+        attackBlocked={attackBlocked}
+        attackTotal={attackTotal}
+        onSelectEvent={(ev) => setSelectedEvent(ev)}
+        onTriggerBurst={triggerAttackBurst}
+      />
+
       {/* Main Split View: Left Traffic Stream / Right Inspector & Code Diff */}
       <div style={{ display: 'grid', gridTemplateColumns: '1.15fr 1fr', gap: 20 }}>
         {/* Left: Real-Time Mixed Traffic Stream */}
@@ -431,7 +460,7 @@ export function App() {
             border: '1px solid #1f2937',
             borderRadius: 10,
             padding: 16,
-            height: 540,
+            height: 410,
             display: 'flex',
             flexDirection: 'column',
           }}
@@ -520,7 +549,7 @@ export function App() {
             border: '1px solid #1f2937',
             borderRadius: 10,
             padding: 16,
-            height: 540,
+            height: 410,
             overflowY: 'auto',
           }}
         >
