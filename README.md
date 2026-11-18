@@ -41,7 +41,7 @@ flowchart LR
 
 | # | 취약점 시나리오 (OWASP) | `v0.1` 초기 취약 | `v0.2` Edge WAF 단독 | `v0.3` 코드 패치 | `v0.4` CI 가드레일 | 기록 (Issue / PR) |
 | :-: | :--- | :--- | :--- | :--- | :--- | :--- |
-| **1** | **BOLA / IDOR**<br>(`GET /api/orders/:id`) | 🔴 **공격 성공률 100%**<br>(타인 주문서·배송지 유출) | 🔴 **공격 성공률 100%**<br>(WAF 차단 0% · 문맥 판별 불가) | 🟢 **공격 성공률 0%**<br>(소유권 인가 Guard + 404) | ⏳ 진행 중<br>([Issue #2](https://github.com/KimseungMoo/payguard-appsec-lab/issues/2)) | [Issue #2](https://github.com/KimseungMoo/payguard-appsec-lab/issues/2) |
+| **1** | **BOLA / IDOR**<br>(`GET /api/orders/:id`) | 🔴 **공격 성공률 100%**<br>(타인 주문서·배송지 유출) | 🔴 **공격 성공률 100%**<br>(WAF 차단 0% · 문맥 판별 불가) | 🟢 **공격 성공률 0%**<br>(소유권 인가 Guard + 404) | 🟢 **검증 완료**<br>(CI 게이트 + Pages 배포) | [Issue #2](https://github.com/KimseungMoo/payguard-appsec-lab/issues/2) · [PR #3](https://github.com/KimseungMoo/payguard-appsec-lab/pull/3) · [PR #4](https://github.com/KimseungMoo/payguard-appsec-lab/pull/4) |
 | **2** | **SQL Injection**<br>(동적 `ORDER BY`) | ⏳ 예정 | ⏳ 예정 | ⏳ 예정 | ⏳ 예정 | *Module 2 예정* |
 | **3** | **XSS & 토큰 탈취**<br>(리뷰 DOM + JWT) | ⏳ 예정 | ⏳ 예정 | ⏳ 예정 | ⏳ 예정 | *Module 3 예정* |
 | **4** | **Race Condition**<br>(선착순 쿠폰 중복 발급) | ⏳ 예정 | ⏳ 예정 | ⏳ 예정 | ⏳ 예정 | *Module 4 예정* |
@@ -50,6 +50,8 @@ flowchart LR
 ---
 
 ## 3. 빠른 실행 (로컬 샌드박스 & 리플레이 콘솔)
+
+- **라이브 정적 리플레이 콘솔 (GitHub Pages)**: https://kimseungmoo.github.io/payguard-appsec-lab/
 
 ```bash
 # 1. 의존성 설치
@@ -60,4 +62,7 @@ npm run dev
 
 # 3. CLI 혼합 트래픽 & IDOR 벤치마크 실행
 npm run test:idor
+
+# 4. CI 회귀 게이트 검증 (v0.3-patched 상태 필수)
+npm run test:idor:ci
 ```
