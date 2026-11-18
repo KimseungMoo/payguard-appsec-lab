@@ -11,7 +11,8 @@
     "dev:api": "npm run dev --workspace=apps/api",
     "dev:console": "npm run dev --workspace=apps/console",
     "build:console": "npm run build --workspace=apps/console",
-    "test:idor": "node --import tsx/esm simulator/attacks/idor-attack.ts"
+    "test:idor": "node --import tsx/esm simulator/attacks/idor-attack.ts",
+    "test:idor:ci": "node --import tsx/esm simulator/attacks/idor-attack.ts --assert-patched"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",

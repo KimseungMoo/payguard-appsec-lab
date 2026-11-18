@@ -11,6 +11,7 @@
  */
 
 const API_BASE = process.env.API_BASE || 'http://localhost:4000';
+const assertPatched = process.argv.includes('--assert-patched');
 
 interface SimStep {
   label: string;
@@ -87,6 +88,16 @@ async function run() {
   console.log(` Normal Traffic Availability : ${normalOk}/${normalTotal} (${((normalOk / normalTotal) * 100).toFixed(0)}%)`);
   console.log(` Attack Exploit Rate         : ${attackSucceeded}/${attackTotal} (${((attackSucceeded / attackTotal) * 100).toFixed(0)}%)`);
   console.log(`-------------------------------------------------------------\n`);
+
+  if (assertPatched) {
+    if (state.defenseMode !== 'v0.3-patched' || normalOk !== normalTotal || attackSucceeded !== 0) {
+      console.error(
+        `[CI Guardrail FAILED] mode=${state.defenseMode} (expected v0.3-patched), normalOk=${normalOk}/${normalTotal}, attackSucceeded=${attackSucceeded}/${attackTotal}`,
+      );
+      process.exit(1);
+    }
+    console.log(`[CI Guardrail PASSED] v0.3-patched verified: 100% normal availability, 0% exploit rate.\n`);
+  }
 }
 
 run().catch((err) => {

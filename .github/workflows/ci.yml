@@ -1,0 +1,46 @@
+name: Security Regression CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  security-gate:
+    name: Console Build & BOLA/IDOR Guardrail
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build console
+        run: npm run build:console
+
+      - name: Run Module 1 v0.3-patched BOLA/IDOR regression gate
+        run: |
+          npm run start --workspace=apps/api &
+          API_PID=$!
+          trap "kill $API_PID 2>/dev/null || true" EXIT
+
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:4000/api/simulation/state >/dev/null 2>&1; then
+              break
+            fi
+            sleep 0.5
+          done
+
+          curl -fsS -X POST http://localhost:4000/api/simulation/mode \
+            -H "Content-Type: application/json" \
+            -d '{"mode":"v0.3-patched"}'
+
+          npm run test:idor:ci
