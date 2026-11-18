@@ -1,0 +1,21 @@
+{
+  "name": "payguard-appsec-lab",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Application Security Engineering Lab: Mixed Traffic Simulation, Defense-in-Depth, and SecDevOps Guardrails",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n API,WEB -c cyan,magenta \"npm run dev --workspace=apps/api\" \"npm run dev --workspace=apps/console\"",
+    "dev:api": "npm run dev --workspace=apps/api",
+    "dev:console": "npm run dev --workspace=apps/console",
+    "build:console": "npm run build --workspace=apps/console",
+    "test:idor": "node --import tsx/esm simulator/attacks/idor-attack.ts"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}
