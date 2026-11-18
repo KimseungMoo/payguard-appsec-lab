@@ -31,6 +31,10 @@ const mixedScenario: SimStep[] = [
   { label: 'Attack: Mallory enumerates order #1004 (Alice)', token: 'tok_mallory_999', orderId: 1004, expectedOwner: 'alice_kim', isAttack: true },
 ];
 
+function randomDelayMs(minMs: number, maxMs: number): number {
+  return Math.round(minMs + Math.random() * (maxMs - minMs));
+}
+
 async function run() {
   const stateRes = await fetch(`${API_BASE}/api/simulation/state`);
   const state = (await stateRes.json()) as { defenseMode: string };
@@ -43,8 +47,11 @@ async function run() {
   let normalOk = 0;
   let attackTotal = 0;
   let attackSucceeded = 0;
+  const startedAt = Date.now();
 
-  for (const step of mixedScenario) {
+  for (let i = 0; i < mixedScenario.length; i++) {
+    const step = mixedScenario[i];
+    const elapsed = `+${String(Date.now() - startedAt).padStart(4, ' ')}ms`;
     const res = await fetch(`${API_BASE}/api/orders/${step.orderId}`, {
       headers: { Authorization: `Bearer ${step.token}` },
     });
@@ -53,22 +60,27 @@ async function run() {
       normalTotal++;
       if (res.status === 200) {
         normalOk++;
-        console.log(`🟢 [PASS] ${step.label} -> HTTP 200`);
+        console.log(`[${elapsed}] 🟢 [PASS] ${step.label} -> HTTP 200`);
       } else {
-        console.log(`🟡 [FALSE POSITIVE] ${step.label} -> HTTP ${res.status}`);
+        console.log(`[${elapsed}] 🟡 [FALSE POSITIVE] ${step.label} -> HTTP ${res.status}`);
       }
     } else {
       attackTotal++;
       if (res.status === 200) {
         attackSucceeded++;
         const body = (await res.json()) as { ownerName: string; item: string; shippingAddress: string };
-        console.log(`🔴 [EXPLOITED] ${step.label} -> HTTP 200 (Leaked: ${body.ownerName}, ${body.item}, ${body.shippingAddress})`);
+        console.log(`[${elapsed}] 🔴 [EXPLOITED] ${step.label} -> HTTP 200 (Leaked: ${body.ownerName}, ${body.item}, ${body.shippingAddress})`);
       } else {
-        console.log(`🛡️ [BLOCKED]   ${step.label} -> HTTP ${res.status}`);
+        console.log(`[${elapsed}] 🛡️ [BLOCKED]   ${step.label} -> HTTP ${res.status}`);
       }
     }
 
-    await new Promise((r) => setTimeout(r, 250));
+    if (i < mixedScenario.length - 1) {
+      const nextStep = mixedScenario[i + 1];
+      // 연속 공격 프로브는 짧은 버스트 간격(45~140ms), 일반 트래픽 전환은 불규칙 간격(140~720ms)
+      const jitter = step.isAttack && nextStep.isAttack ? randomDelayMs(45, 140) : randomDelayMs(140, 720);
+      await new Promise((r) => setTimeout(r, jitter));
+    }
   }
 
   console.log(`\n-------------------------------------------------------------`);
