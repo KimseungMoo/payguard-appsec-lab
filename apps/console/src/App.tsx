@@ -98,8 +98,11 @@ export function App() {
   const [metrics, setMetrics] = useState<TelemetryMetrics>(EMPTY_METRICS);
   const [selectedEvent, setSelectedEvent] = useState<TrafficEvent | null>(null);
   const stepIndexRef = useRef(0);
+  const seenEventIdsRef = useRef<Set<string>>(new Set());
 
   const pushTelemetryEvent = (ev: TrafficEvent) => {
+    if (seenEventIdsRef.current.has(ev.id)) return;
+    seenEventIdsRef.current.add(ev.id);
     setEvents((prev) => [ev, ...prev].slice(0, 80));
     setMetrics((prev) => applyEventToMetrics(prev, ev));
     setSelectedEvent((curr) => curr ?? ev);
@@ -107,30 +110,41 @@ export function App() {
 
   // 로컬 API(SSE) 연결 시도 — 연결 실패 시 GitHub Pages 정적 리플레이 모드로 자동 동작
   useEffect(() => {
+    let cancelled = false;
+    const controller = new AbortController();
     let es: EventSource | null = null;
-    fetch(`${API_BASE}/api/simulation/state`)
+    fetch(`${API_BASE}/api/simulation/state`, { signal: controller.signal })
       .then((r) => r.json())
       .then((data) => {
+        if (cancelled) return;
         setIsLiveApiConnected(true);
         setDefenseMode(data.defenseMode);
         if (data.metrics) {
           setMetrics(data.metrics);
         }
         if (Array.isArray(data.recentEvents) && data.recentEvents.length > 0) {
+          seenEventIdsRef.current = new Set(data.recentEvents.map((e: TrafficEvent) => e.id));
           setEvents(data.recentEvents);
           setSelectedEvent(data.recentEvents[0]);
+        } else {
+          seenEventIdsRef.current.clear();
         }
         es = new EventSource(`${API_BASE}/api/telemetry/stream`);
         es.onmessage = (msg) => {
+          if (cancelled) return;
           const ev = JSON.parse(msg.data) as TrafficEvent;
           pushTelemetryEvent(ev);
         };
       })
       .catch(() => {
-        setIsLiveApiConnected(false);
+        if (!cancelled) {
+          setIsLiveApiConnected(false);
+        }
       });
 
     return () => {
+      cancelled = true;
+      controller.abort();
       es?.close();
     };
   }, []);
@@ -141,6 +155,7 @@ export function App() {
     setMetrics(EMPTY_METRICS);
     setSelectedEvent(null);
     stepIndexRef.current = 0;
+    seenEventIdsRef.current.clear();
     if (isLiveApiConnected) {
       await fetch(`${API_BASE}/api/simulation/mode`, {
         method: 'POST',
