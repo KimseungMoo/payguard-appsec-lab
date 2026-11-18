@@ -43,6 +43,22 @@ export interface TrafficEvent {
   detail: string;
 }
 
+export interface TelemetryMetrics {
+  normalTotal: number;
+  normalPassed: number;
+  attackTotal: number;
+  attackBlocked: number;
+  totalLeakedOrders: number;
+}
+
+const EMPTY_METRICS = (): TelemetryMetrics => ({
+  normalTotal: 0,
+  normalPassed: 0,
+  attackTotal: 0,
+  attackBlocked: 0,
+  totalLeakedOrders: 0,
+});
+
 export const telemetryEmitter = new EventEmitter();
 
 export class CommerceStore {
@@ -57,6 +73,7 @@ export class CommerceStore {
 
   public orders: Order[] = [];
   public events: TrafficEvent[] = [];
+  public metrics: TelemetryMetrics = EMPTY_METRICS();
 
   constructor() {
     this.reset();
@@ -116,6 +133,7 @@ export class CommerceStore {
       },
     ];
     this.events = [];
+    this.metrics = EMPTY_METRICS();
   }
 
   findUserByToken(authHeader?: string): User | undefined {
@@ -137,6 +155,19 @@ export class CommerceStore {
     };
     this.events.unshift(full);
     if (this.events.length > 200) this.events.pop();
+
+    // 슬라이딩 윈도우(200건)와 분리해 누적 지표를 갱신
+    if (full.actorType === 'normal') {
+      this.metrics.normalTotal += 1;
+      if (full.statusCode === 200) this.metrics.normalPassed += 1;
+    } else {
+      this.metrics.attackTotal += 1;
+      if (full.appAction === 'BLOCKED_GUARD' || full.wafAction === 'BLOCKED') {
+        this.metrics.attackBlocked += 1;
+      }
+    }
+    this.metrics.totalLeakedOrders += full.impactDelta.leakedOrders;
+
     telemetryEmitter.emit('traffic', full);
     return full;
   }

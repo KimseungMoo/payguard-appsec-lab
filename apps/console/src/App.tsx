@@ -62,13 +62,48 @@ function formatTimeMs(iso: string): string {
   return `${hh}:${mm}:${ss}.${ms}`;
 }
 
+export interface TelemetryMetrics {
+  normalTotal: number;
+  normalPassed: number;
+  attackTotal: number;
+  attackBlocked: number;
+  totalLeakedOrders: number;
+}
+
+const EMPTY_METRICS: TelemetryMetrics = {
+  normalTotal: 0,
+  normalPassed: 0,
+  attackTotal: 0,
+  attackBlocked: 0,
+  totalLeakedOrders: 0,
+};
+
+function applyEventToMetrics(prev: TelemetryMetrics, ev: TrafficEvent): TelemetryMetrics {
+  const isNormal = ev.actorType === 'normal';
+  const isBlocked = ev.appAction === 'BLOCKED_GUARD' || ev.wafAction === 'BLOCKED';
+  return {
+    normalTotal: prev.normalTotal + (isNormal ? 1 : 0),
+    normalPassed: prev.normalPassed + (isNormal && ev.statusCode === 200 ? 1 : 0),
+    attackTotal: prev.attackTotal + (!isNormal ? 1 : 0),
+    attackBlocked: prev.attackBlocked + (!isNormal && isBlocked ? 1 : 0),
+    totalLeakedOrders: prev.totalLeakedOrders + ev.impactDelta.leakedOrders,
+  };
+}
+
 export function App() {
   const [defenseMode, setDefenseMode] = useState<DefenseMode>('v0.1-vulnerable');
   const [isLiveApiConnected, setIsLiveApiConnected] = useState<boolean>(false);
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [events, setEvents] = useState<TrafficEvent[]>([]);
+  const [metrics, setMetrics] = useState<TelemetryMetrics>(EMPTY_METRICS);
   const [selectedEvent, setSelectedEvent] = useState<TrafficEvent | null>(null);
   const stepIndexRef = useRef(0);
+
+  const pushTelemetryEvent = (ev: TrafficEvent) => {
+    setEvents((prev) => [ev, ...prev].slice(0, 80));
+    setMetrics((prev) => applyEventToMetrics(prev, ev));
+    setSelectedEvent((curr) => curr ?? ev);
+  };
 
   // 로컬 API(SSE) 연결 시도 — 연결 실패 시 GitHub Pages 정적 리플레이 모드로 자동 동작
   useEffect(() => {
@@ -78,6 +113,9 @@ export function App() {
       .then((data) => {
         setIsLiveApiConnected(true);
         setDefenseMode(data.defenseMode);
+        if (data.metrics) {
+          setMetrics(data.metrics);
+        }
         if (Array.isArray(data.recentEvents) && data.recentEvents.length > 0) {
           setEvents(data.recentEvents);
           setSelectedEvent(data.recentEvents[0]);
@@ -85,11 +123,7 @@ export function App() {
         es = new EventSource(`${API_BASE}/api/telemetry/stream`);
         es.onmessage = (msg) => {
           const ev = JSON.parse(msg.data) as TrafficEvent;
-          setEvents((prev) => {
-            const next = [ev, ...prev].slice(0, 80);
-            return next;
-          });
-          setSelectedEvent((curr) => curr ?? ev);
+          pushTelemetryEvent(ev);
         };
       })
       .catch(() => {
@@ -104,6 +138,7 @@ export function App() {
   const switchMode = async (mode: DefenseMode) => {
     setDefenseMode(mode);
     setEvents([]);
+    setMetrics(EMPTY_METRICS);
     setSelectedEvent(null);
     stepIndexRef.current = 0;
     if (isLiveApiConnected) {
@@ -157,8 +192,7 @@ export function App() {
         : `Normal order lookup by owner ${step.actor} (#${step.orderId})`,
     };
 
-    setEvents((prev) => [synthetic, ...prev].slice(0, 80));
-    setSelectedEvent((curr) => curr ?? synthetic);
+    pushTelemetryEvent(synthetic);
   };
 
   const fireRandomManualStep = () => {
@@ -237,13 +271,8 @@ export function App() {
     };
   }, [isRunning, defenseMode, isLiveApiConnected]);
 
-  // 집계 지표 계산
-  const normalEvents = events.filter((e) => e.actorType === 'normal');
-  const normalPassed = normalEvents.filter((e) => e.statusCode === 200).length;
-  const attackEvents = events.filter((e) => e.actorType === 'attacker');
-  const attackExploited = attackEvents.filter((e) => e.appAction === 'EXPLOITED').length;
-  const attackBlocked = attackEvents.filter((e) => e.appAction === 'BLOCKED_GUARD' || e.wafAction === 'BLOCKED').length;
-  const totalLeakedOrders = events.reduce((acc, e) => acc + e.impactDelta.leakedOrders, 0);
+  // 누적 지표(metrics state) 기반 표시값 계산 (80건 화면 버퍼와 분리)
+  const { normalTotal, normalPassed, attackTotal, attackBlocked, totalLeakedOrders } = metrics;
 
   return (
     <div style={{ maxWidth: 1400, margin: '0 auto', padding: '20px 24px' }}>
@@ -354,8 +383,8 @@ export function App() {
       >
         <MetricCard
           title="정상 유저 가용성 (Availability)"
-          value={normalEvents.length ? `${Math.round((normalPassed / normalEvents.length) * 100)}%` : '100%'}
-          sub={`${normalPassed} / ${normalEvents.length} 정상 요청 성공`}
+          value={normalTotal ? `${Math.round((normalPassed / normalTotal) * 100)}%` : '100%'}
+          sub={`${normalPassed} / ${normalTotal} 정상 요청 성공`}
           color="#34d399"
         />
         <MetricCard
@@ -366,7 +395,7 @@ export function App() {
         />
         <MetricCard
           title="Layer 2: AppSec Guard 차단"
-          value={`${attackBlocked}건 (${attackEvents.length ? Math.round((attackBlocked / attackEvents.length) * 100) : 0}%)`}
+          value={`${attackBlocked}건 (${attackTotal ? Math.round((attackBlocked / attackTotal) * 100) : 0}%)`}
           sub={defenseMode === 'v0.3-patched' ? '소유권 인가 검증 작동 중' : '소유권 검증 누락 (취약)'}
           color="#38bdf8"
         />

@@ -14,7 +14,8 @@ app.use('/api/orders', ordersRouter);
 app.get('/api/simulation/state', (_req: Request, res: Response) => {
   res.json({
     defenseMode: store.defenseMode,
-    recentEvents: store.events.slice(0, 60),
+    recentEvents: store.events.slice(0, 80),
+    metrics: store.metrics,
     ordersCount: store.orders.length,
   });
 });
