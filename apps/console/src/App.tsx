@@ -1,7 +1,12 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { IncidentLinks } from './components/IncidentLinks';
+import { ServiceEvolutionBar } from './components/ServiceEvolutionBar';
+import { StatusBadge } from './components/StatusBadge';
+import { StoryView } from './components/StoryView';
 import { TacticalArena } from './components/TacticalArena';
 
 export type DefenseMode = 'v0.1-vulnerable' | 'v0.2-waf-only' | 'v0.3-patched';
+export type ViewTab = 'console' | 'story';
 
 export interface TrafficEvent {
   id: string;
@@ -79,6 +84,39 @@ const EMPTY_METRICS: TelemetryMetrics = {
   totalLeakedOrders: 0,
 };
 
+const MODE_STORY: Record<
+  DefenseMode,
+  { label: string; dotColor: string; badge: string; text: string; accent: string; bg: string; border: string }
+> = {
+  'v0.1-vulnerable': {
+    label: 'v0.1 취약',
+    dotColor: '#f43f5e',
+    badge: 'STEP 1 · VULNERABLE',
+    text: "로그인만 확인하고 '내 주문인지' 검사하지 않아 타인의 영수증·배송지가 그대로 유출됩니다.",
+    accent: '#fda4af',
+    bg: 'rgba(244, 63, 94, 0.12)',
+    border: 'rgba(244, 63, 94, 0.35)',
+  },
+  'v0.2-waf-only': {
+    label: 'v0.2 WAF',
+    dotColor: '#f59e0b',
+    badge: 'STEP 2 · EDGE WAF ONLY',
+    text: '앞단 WAF가 켜져 있어도 정상 HTTP 문법의 타인 주문 조회는 탐지하지 못합니다 (WAF 차단 0%).',
+    accent: '#fcd34d',
+    bg: 'rgba(245, 158, 11, 0.12)',
+    border: 'rgba(245, 158, 11, 0.35)',
+  },
+  'v0.3-patched': {
+    label: 'v0.3 패치',
+    dotColor: '#38bdf8',
+    badge: 'STEP 3 · CODE PATCHED',
+    text: '서버 코드에서 주문 소유자 일치(userId === owner)를 검증해 정상 트래픽은 유지하고 공격만 100% 차단합니다.',
+    accent: '#38bdf8',
+    bg: 'rgba(56, 189, 248, 0.12)',
+    border: 'rgba(56, 189, 248, 0.35)',
+  },
+};
+
 function applyEventToMetrics(prev: TelemetryMetrics, ev: TrafficEvent): TelemetryMetrics {
   const isNormal = ev.actorType === 'normal';
   const isBlocked = ev.appAction === 'BLOCKED_GUARD' || ev.wafAction === 'BLOCKED';
@@ -91,15 +129,44 @@ function applyEventToMetrics(prev: TelemetryMetrics, ev: TrafficEvent): Telemetr
   };
 }
 
+function readInitialView(): ViewTab {
+  if (typeof window === 'undefined') return 'console';
+  return new URLSearchParams(window.location.search).get('view') === 'story' ? 'story' : 'console';
+}
+
 export function App() {
+  const [viewTab, setViewTab] = useState<ViewTab>(readInitialView);
   const [defenseMode, setDefenseMode] = useState<DefenseMode>('v0.1-vulnerable');
   const [isLiveApiConnected, setIsLiveApiConnected] = useState<boolean>(false);
   const [isRunning, setIsRunning] = useState<boolean>(true);
   const [events, setEvents] = useState<TrafficEvent[]>([]);
   const [metrics, setMetrics] = useState<TelemetryMetrics>(EMPTY_METRICS);
   const [selectedEvent, setSelectedEvent] = useState<TrafficEvent | null>(null);
+  const [isCompactView, setIsCompactView] = useState<boolean>(false);
+  const [demoPhase, setDemoPhase] = useState<'vulnerable' | 'patched' | null>(null);
   const stepIndexRef = useRef(0);
   const seenEventIdsRef = useRef<Set<string>>(new Set());
+  const defenseModeRef = useRef<DefenseMode>(defenseMode);
+  const isLiveApiConnectedRef = useRef<boolean>(isLiveApiConnected);
+
+  useEffect(() => {
+    defenseModeRef.current = defenseMode;
+  }, [defenseMode]);
+
+  useEffect(() => {
+    isLiveApiConnectedRef.current = isLiveApiConnected;
+  }, [isLiveApiConnected]);
+
+  const handleSetViewTab = (next: ViewTab) => {
+    setViewTab(next);
+    const url = new URL(window.location.href);
+    if (next === 'story') {
+      url.searchParams.set('view', 'story');
+    } else {
+      url.searchParams.delete('view');
+    }
+    window.history.replaceState({}, '', url.toString());
+  };
 
   const pushTelemetryEvent = (ev: TrafficEvent) => {
     if (seenEventIdsRef.current.has(ev.id)) return;
@@ -151,13 +218,14 @@ export function App() {
   }, []);
 
   const switchMode = async (mode: DefenseMode) => {
+    defenseModeRef.current = mode;
     setDefenseMode(mode);
     setEvents([]);
     setMetrics(EMPTY_METRICS);
     setSelectedEvent(null);
     stepIndexRef.current = 0;
     seenEventIdsRef.current.clear();
-    if (isLiveApiConnected) {
+    if (isLiveApiConnectedRef.current) {
       await fetch(`${API_BASE}/api/simulation/mode`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -169,7 +237,7 @@ export function App() {
   const dispatchTrafficStep = async (step: TrafficStep) => {
     stepIndexRef.current += 1;
 
-    if (isLiveApiConnected) {
+    if (isLiveApiConnectedRef.current) {
       await fetch(`${API_BASE}/api/orders/${step.orderId}`, {
         headers: { Authorization: `Bearer ${step.token}` },
       });
@@ -177,7 +245,8 @@ export function App() {
     }
 
     // Static Replay fallback (GitHub Pages 무서버 동작용)
-    const isPatched = defenseMode === 'v0.3-patched';
+    const activeMode = defenseModeRef.current;
+    const isPatched = activeMode === 'v0.3-patched';
     const isExploited = step.isAttack && !isPatched;
     const isBlocked = step.isAttack && isPatched;
 
@@ -190,7 +259,7 @@ export function App() {
       method: 'GET',
       path: `/api/orders/${step.orderId}`,
       payloadSummary: `Bearer ${step.token} -> order #${step.orderId}`,
-      defenseMode,
+      defenseMode: activeMode,
       wafAction: 'PASS',
       appAction: isExploited ? 'EXPLOITED' : isBlocked ? 'BLOCKED_GUARD' : 'ALLOWED',
       statusCode: isBlocked ? 404 : 200,
@@ -303,338 +372,707 @@ export function App() {
     };
   }, [isRunning, defenseMode, isLiveApiConnected]);
 
-  // 누적 지표(metrics state) 기반 표시값 계산 (80건 화면 버퍼와 분리)
+  // 12초 Before/After 자동 데모: v0.1 유출(5.5초) -> v0.3 패치 차단(6.5초)
+  useEffect(() => {
+    if (!demoPhase) return;
+    let cancelled = false;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+
+    const runSequence = async () => {
+      setIsRunning(true);
+      await switchMode('v0.1-vulnerable');
+      if (cancelled) return;
+      void triggerAttackBurst();
+
+      timers.push(
+        setTimeout(() => {
+          if (!cancelled) void triggerAttackBurst();
+        }, 2600),
+      );
+      timers.push(
+        setTimeout(async () => {
+          if (cancelled) return;
+          setDemoPhase('patched');
+          await switchMode('v0.3-patched');
+          if (!cancelled) void triggerAttackBurst();
+        }, 5500),
+      );
+      timers.push(
+        setTimeout(() => {
+          if (!cancelled) void triggerAttackBurst();
+        }, 8400),
+      );
+      timers.push(
+        setTimeout(() => {
+          if (!cancelled) setDemoPhase(null);
+        }, 12000),
+      );
+    };
+
+    void runSequence();
+    return () => {
+      cancelled = true;
+      timers.forEach(clearTimeout);
+    };
+  }, [demoPhase !== null]);
+
   const { normalTotal, normalPassed, attackTotal, attackBlocked, totalLeakedOrders } = metrics;
+  const story = MODE_STORY[defenseMode];
+
+  const p95Latency = useMemo(() => {
+    if (events.length === 0) return 0;
+    const sorted = events.map((e) => e.latencyMs).sort((a, b) => a - b);
+    return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))];
+  }, [events]);
+
+  const normalSparkPoints = useMemo(() => {
+    const slice = events.slice(0, 12).reverse();
+    if (slice.length < 2) return '2,20 58,20';
+    return slice
+      .map((e, i) => {
+        const x = 2 + (i / (slice.length - 1)) * 56;
+        const y = e.actorType === 'normal' ? 7 : 18;
+        return `${x.toFixed(1)},${y}`;
+      })
+      .join(' ');
+  }, [events]);
+
+  const guardSparkPoints = useMemo(() => {
+    const slice = events.slice(0, 12).reverse();
+    if (slice.length < 2) return '2,22 58,22';
+    return slice
+      .map((e, i) => {
+        const x = 2 + (i / (slice.length - 1)) * 56;
+        const y = e.appAction === 'BLOCKED_GUARD' ? 5 : e.appAction === 'EXPLOITED' ? 22 : 14;
+        return `${x.toFixed(1)},${y}`;
+      })
+      .join(' ');
+  }, [events]);
+
+  const inspectedEvent = selectedEvent ?? events[0] ?? null;
 
   return (
-    <div style={{ maxWidth: 1400, margin: '0 auto', padding: '20px 24px' }}>
-      {/* Header */}
-      <header
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          borderBottom: '1px solid #1e293b',
-          paddingBottom: 16,
-          marginBottom: 20,
-          flexWrap: 'wrap',
-          gap: 12,
-        }}
-      >
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontSize: 20, fontWeight: 700, color: '#f8fafc' }}>
-              🛡️ PayGuard AppSec Replay Console
-            </span>
+    <div className={`pg-page${isCompactView ? ' compact' : ''}`}>
+      {/* Product Topbar */}
+      <header className="pg-header">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <div
+            style={{
+              width: 28,
+              height: 28,
+              borderRadius: 7,
+              background: '#6366f1',
+              display: 'grid',
+              placeItems: 'center',
+              color: '#ffffff',
+              flexShrink: 0,
+            }}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+            </svg>
+          </div>
+          <div>
+            <div style={{ fontSize: 15.5, fontWeight: 700, color: '#f8fafc', letterSpacing: '-0.01em' }}>
+              PayGuard AppSec Console
+            </div>
+            <div style={{ fontSize: 11.5, color: '#94a3b8', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+              <span>Module 1 · BOLA / IDOR · 참고 사례:</span>
+              <IncidentLinks />
+            </div>
+          </div>
+
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              fontSize: 11,
+              padding: '3px 9px',
+              borderRadius: 999,
+              border: '1px solid #1e293b',
+              background: '#111827',
+              color: isLiveApiConnected ? '#34d399' : '#93c5fd',
+              fontWeight: 600,
+            }}
+          >
             <span
               style={{
-                fontSize: 12,
-                padding: '2px 8px',
-                borderRadius: 999,
-                background: isLiveApiConnected ? '#064e3b' : '#1e3a8a',
-                color: isLiveApiConnected ? '#34d399' : '#93c5fd',
-                fontWeight: 600,
+                width: 6,
+                height: 6,
+                borderRadius: '50%',
+                background: isLiveApiConnected ? '#10b981' : '#38bdf8',
               }}
-            >
-              {isLiveApiConnected ? '● LIVE API CONNECTED (:4000)' : '● STATIC REPLAY MODE'}
-            </span>
-          </div>
-          <p style={{ margin: '4px 0 0', fontSize: 13, color: '#94a3b8' }}>
-            동시 다발적 정상 사용자 트래픽 속 기습 공격(Module 1: BOLA/IDOR) 시뮬레이션 및 방어 계층 검증
-          </p>
+            />
+            {isLiveApiConnected ? 'SANDBOXED · LIVE SSE :4000' : 'SANDBOXED · STATIC REPLAY'}
+          </span>
         </div>
 
-        {/* Mode Selector & Controls */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          {(['v0.1-vulnerable', 'v0.2-waf-only', 'v0.3-patched'] as DefenseMode[]).map((m) => {
-            const active = defenseMode === m;
-            return (
-              <button
-                key={m}
-                onClick={() => switchMode(m)}
+        {/* Fixed Top-Right Utility Controls (never shift across view tabs) */}
+        <div className="pg-header-actions">
+          {/* Console / Story Toggle */}
+          <div
+            style={{
+              display: 'inline-flex',
+              padding: 3,
+              borderRadius: 8,
+              background: '#0f172a',
+              border: '1px solid #1e293b',
+              gap: 2,
+            }}
+          >
+            {(['console', 'story'] as ViewTab[]).map((tab) => {
+              const active = viewTab === tab;
+              return (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => handleSetViewTab(tab)}
+                  style={{
+                    border: active ? '1px solid #4f46e5' : '1px solid transparent',
+                    background: active ? '#1e1b4b' : 'transparent',
+                    color: active ? '#e0e7ff' : '#94a3b8',
+                    fontSize: 11.5,
+                    fontWeight: 700,
+                    padding: '5px 10px',
+                    borderRadius: 6,
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {tab === 'console' ? '콘솔 뷰' : '스토리 뷰'}
+                </button>
+              );
+            })}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setIsRunning((r) => !r)}
+            style={{
+              boxSizing: 'border-box',
+              padding: '6px 10px',
+              borderRadius: 7,
+              border: '1px solid #334155',
+              background: isRunning ? '#1e293b' : '#065f46',
+              color: '#f8fafc',
+              fontSize: 12,
+              fontWeight: 700,
+              cursor: 'pointer',
+              width: 114,
+              textAlign: 'center',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {isRunning ? '일시정지' : '시뮬레이션 시작'}
+          </button>
+        </div>
+      </header>
+
+      {!isCompactView && <ServiceEvolutionBar defenseMode={defenseMode} onSelectMode={switchMode} />}
+
+      {viewTab === 'story' ? (
+        <StoryView
+          defenseMode={defenseMode}
+          events={events}
+          metrics={metrics}
+          onSelectMode={switchMode}
+          onTriggerBurst={() => void triggerAttackBurst()}
+          onSwitchToConsole={() => handleSetViewTab('console')}
+        />
+      ) : (
+        <>
+          {/* One-line Story Banner + Console Mode Controls */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 12,
+              padding: isCompactView ? '7px 12px' : '8px 14px',
+              marginBottom: isCompactView ? 10 : 14,
+              borderRadius: 8,
+              background: story.bg,
+              border: `1px solid ${story.border}`,
+              fontSize: 12.5,
+              flexWrap: 'wrap',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', flex: '1 1 380px' }}>
+              <span style={{ fontWeight: 800, color: story.accent }}>{story.badge}</span>
+              <span style={{ color: '#f8fafc' }}>{story.text}</span>
+              {demoPhase && (
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 700,
+                    color: '#c7d2fe',
+                    fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+                  }}
+                >
+                  {demoPhase === 'vulnerable' ? 'DEMO 1/2 · EXPLOIT REPRO' : 'DEMO 2/2 · PATCH BLOCKED'}
+                </span>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <div
                 style={{
-                  padding: '8px 12px',
-                  borderRadius: 6,
-                  border: active ? '1px solid #38bdf8' : '1px solid #334155',
-                  background: active ? '#0284c7' : '#0f172a',
-                  color: '#f8fafc',
+                  display: 'inline-flex',
+                  padding: 3,
+                  borderRadius: 8,
+                  background: '#0f172a',
+                  border: '1px solid #1e293b',
+                  gap: 2,
+                }}
+              >
+                {(['v0.1-vulnerable', 'v0.2-waf-only', 'v0.3-patched'] as DefenseMode[]).map((m) => {
+                  const active = defenseMode === m;
+                  const meta = MODE_STORY[m];
+                  return (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => switchMode(m)}
+                      style={{
+                        border: active ? '1px solid #334155' : '1px solid transparent',
+                        background: active ? '#111827' : 'transparent',
+                        color: active ? '#f8fafc' : '#94a3b8',
+                        fontSize: 12,
+                        fontWeight: 600,
+                        padding: '4px 10px',
+                        borderRadius: 6,
+                        cursor: 'pointer',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 6,
+                      }}
+                    >
+                      <span
+                        style={{
+                          width: 6,
+                          height: 6,
+                          borderRadius: '50%',
+                          background: meta.dotColor,
+                        }}
+                      />
+                      {meta.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setDemoPhase((p) => (p ? null : 'vulnerable'))}
+                style={{
+                  padding: '5px 10px',
+                  borderRadius: 7,
+                  border: '1px solid #6366f1',
+                  background: demoPhase ? '#4f46e5' : '#6366f1',
+                  color: '#ffffff',
+                  fontSize: 12,
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+              >
+                {demoPhase ? '데모 중지' : '12초 데모'}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setIsCompactView((c) => !c)}
+                style={{
+                  padding: '5px 10px',
+                  borderRadius: 7,
+                  border: isCompactView ? '1px solid #38bdf8' : '1px solid #334155',
+                  background: isCompactView ? '#0c4a6e' : '#111827',
+                  color: '#e2e8f0',
                   fontSize: 12,
                   fontWeight: 600,
                   cursor: 'pointer',
                 }}
               >
-                {m === 'v0.1-vulnerable' && '🔴 v0.1 Vulnerable'}
-                {m === 'v0.2-waf-only' && '🟡 v0.2 Edge WAF Only'}
-                {m === 'v0.3-patched' && '🟢 v0.3 Code Patched'}
+                {isCompactView ? '기본 뷰' : 'GIF 뷰'}
               </button>
-            );
-          })}
-
-          <button
-            onClick={() => setIsRunning((r) => !r)}
-            style={{
-              padding: '8px 16px',
-              borderRadius: 6,
-              border: 'none',
-              background: isRunning ? '#dc2626' : '#10b981',
-              color: '#ffffff',
-              fontSize: 13,
-              fontWeight: 700,
-              cursor: 'pointer',
-              marginLeft: 8,
-            }}
-          >
-            {isRunning ? '⏸ 일시정지' : '▶ 혼합 트래픽 시뮬레이션 시작'}
-          </button>
-
-          <button
-            onClick={fireRandomManualStep}
-            style={{
-              padding: '8px 12px',
-              borderRadius: 6,
-              border: '1px solid #475569',
-              background: '#1e293b',
-              color: '#e2e8f0',
-              fontSize: 12,
-              cursor: 'pointer',
-            }}
-          >
-            +1 스텝 수동 실행
-          </button>
-        </div>
-      </header>
-
-      {/* Top Metrics & Defense Funnel */}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(4, 1fr)',
-          gap: 14,
-          marginBottom: 20,
-        }}
-      >
-        <MetricCard
-          title="정상 유저 가용성 (Availability)"
-          value={normalTotal ? `${Math.round((normalPassed / normalTotal) * 100)}%` : '100%'}
-          sub={`${normalPassed} / ${normalTotal} 정상 요청 성공`}
-          color="#34d399"
-        />
-        <MetricCard
-          title="Layer 1: Edge WAF 차단"
-          value="0건 (0%)"
-          sub="IDOR는 정상 HTTP 문법이라 WAF 통과"
-          color="#fbbf24"
-        />
-        <MetricCard
-          title="Layer 2: AppSec Guard 차단"
-          value={`${attackBlocked}건 (${attackTotal ? Math.round((attackBlocked / attackTotal) * 100) : 0}%)`}
-          sub={defenseMode === 'v0.3-patched' ? '소유권 인가 검증 작동 중' : '소유권 검증 누락 (취약)'}
-          color="#38bdf8"
-        />
-        <MetricCard
-          title="누적 피해: 유출된 타인 주문서"
-          value={`${totalLeakedOrders}건`}
-          sub={totalLeakedOrders > 0 ? '🚨 카드뒷자리·배송지 유출 발생!' : '✅ 피해 없음 (0건)'}
-          color={totalLeakedOrders > 0 ? '#f87171' : '#34d399'}
-        />
-      </div>
-
-      {/* Tactical Live Traffic Arena */}
-      <TacticalArena
-        defenseMode={defenseMode}
-        latestEvent={events[0] ?? null}
-        totalLeakedOrders={totalLeakedOrders}
-        normalTotal={normalTotal}
-        attackBlocked={attackBlocked}
-        attackTotal={attackTotal}
-        onSelectEvent={(ev) => setSelectedEvent(ev)}
-        onTriggerBurst={triggerAttackBurst}
-      />
-
-      {/* Main Split View: Left Traffic Stream / Right Inspector & Code Diff */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1.15fr 1fr', gap: 20 }}>
-        {/* Left: Real-Time Mixed Traffic Stream */}
-        <section
-          style={{
-            background: '#111827',
-            border: '1px solid #1f2937',
-            borderRadius: 10,
-            padding: 16,
-            height: 410,
-            display: 'flex',
-            flexDirection: 'column',
-          }}
-        >
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
-            <strong style={{ fontSize: 14, color: '#f3f4f6' }}>
-              📡 실시간 혼합 트래픽 스트림 (Normal Users + Attacker Bursts)
-            </strong>
-            <span style={{ fontSize: 12, color: '#9ca3af' }}>클릭하여 상세 패킷·코드 분석</span>
+            </div>
           </div>
 
-          <div style={{ overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {events.length === 0 && (
-              <div style={{ color: '#64748b', fontSize: 13, padding: 32, textAlign: 'center' }}>
-                우측 상단의 <b>[▶ 혼합 트래픽 시뮬레이션 시작]</b> 버튼을 누르면<br />
-                일반 사용자 요청과 해커의 기습 IDOR 공격이 실시간으로 흘러갑니다.
-              </div>
-            )}
+          {/* 70:30 Hero Grid: Tactical Map (Left) + KPI Sparkline Stack (Right) */}
+          <div className="pg-hero-grid">
+            <TacticalArena
+              defenseMode={defenseMode}
+              events={events}
+              totalLeakedOrders={totalLeakedOrders}
+              normalTotal={normalTotal}
+              attackBlocked={attackBlocked}
+              attackTotal={attackTotal}
+              compact={isCompactView}
+              onSelectEvent={(ev) => setSelectedEvent(ev)}
+              onTriggerBurst={() => void triggerAttackBurst()}
+            />
 
-            {events.map((ev) => {
-              const isSelected = selectedEvent?.id === ev.id;
-              const badgeColor =
-                ev.appAction === 'EXPLOITED'
-                  ? '#ef4444'
-                  : ev.appAction === 'BLOCKED_GUARD'
-                  ? '#3b82f6'
-                  : '#10b981';
-              const badgeText =
-                ev.appAction === 'EXPLOITED'
-                  ? '🔴 EXPLOITED (200)'
-                  : ev.appAction === 'BLOCKED_GUARD'
-                  ? '🛡️ BLOCKED (404)'
-                  : '🟢 NORMAL (200)';
+            <div className="pg-kpi-stack">
+              <KpiRowCard
+                label="정상 유저 가용성 (False Positive)"
+                value={normalTotal ? `${Math.round((normalPassed / normalTotal) * 100)}%` : '100%'}
+                sub={`${normalPassed} / ${normalTotal} 정상 요청 HTTP 200`}
+                color="#34d399"
+                sparkPoints={normalSparkPoints}
+              />
+              <KpiRowCard
+                label="L1 · Edge WAF 차단율"
+                value="0%"
+                sub="정상 HTTP 문법이라 문맥 판별 불가"
+                color="#fbbf24"
+                badge="PASS"
+              />
+              <KpiRowCard
+                label="L2 · AppSec Guard 차단율"
+                value={attackTotal ? `${Math.round((attackBlocked / attackTotal) * 100)}%` : '0%'}
+                sub={
+                  defenseMode === 'v0.3-patched'
+                    ? `${attackBlocked} / ${attackTotal} 타인 주문 차단`
+                    : '소유권 인가 검증 누락 (취약)'
+                }
+                color={defenseMode === 'v0.3-patched' ? '#38bdf8' : '#fda4af'}
+                sparkPoints={guardSparkPoints}
+              />
+              <KpiRowCard
+                label="누적 피해 · 유출된 타인 주문서"
+                value={`${totalLeakedOrders}건`}
+                sub={totalLeakedOrders > 0 ? '카드 뒷자리·배송지 유출 발생' : '카드 뒷자리·배송지 보호됨'}
+                color={totalLeakedOrders > 0 ? '#fda4af' : '#34d399'}
+                badge={totalLeakedOrders > 0 ? `${totalLeakedOrders} LEAKED` : '0 LEAKED'}
+              />
+            </div>
+          </div>
 
-              return (
-                <div
-                  key={ev.id}
-                  onClick={() => setSelectedEvent(ev)}
+          {/* Bottom Split: Fingerprint + Fixed-Width Stream (Left) / 4-Stage Waterfall + Diff (Right) */}
+          <div className="pg-bottom-grid">
+            <section
+              className="pg-stream-panel"
+              style={{
+                background: '#111827',
+                border: '1px solid #1e293b',
+                borderRadius: 10,
+                padding: isCompactView ? 12 : 14,
+                display: 'flex',
+                flexDirection: 'column',
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  marginBottom: 8,
+                }}
+              >
+                <span style={{ fontSize: 11.5, fontWeight: 700, color: '#94a3b8', letterSpacing: '0.04em' }}>
+                  LIVE REQUEST STREAM
+                </span>
+                <button
+                  type="button"
+                  onClick={fireRandomManualStep}
                   style={{
-                    padding: '10px 12px',
-                    borderRadius: 8,
-                    background: isSelected ? '#1e293b' : '#0f172a',
-                    border: isSelected ? '1px solid #38bdf8' : '1px solid #1e293b',
+                    padding: '2px 8px',
+                    borderRadius: 5,
+                    border: '1px solid #334155',
+                    background: '#0f172a',
+                    color: '#cbd5e1',
+                    fontSize: 11,
                     cursor: 'pointer',
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    gap: 10,
                   }}
                 >
-                  <div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span
+                  +1 스텝
+                </button>
+              </div>
+
+              {/* Endpoint Fingerprint Summary */}
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  flexWrap: 'wrap',
+                  gap: 8,
+                  padding: '6px 10px',
+                  borderRadius: 7,
+                  background: '#0f172a',
+                  border: '1px solid #1e293b',
+                  marginBottom: 8,
+                  fontSize: 11.5,
+                  color: '#94a3b8',
+                  fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+                }}
+              >
+                <span>GET /api/orders/:id</span>
+                <span>
+                  정상 {normalTotal} · 차단 {attackBlocked} · 유출 {totalLeakedOrders} · p95 {p95Latency}ms
+                </span>
+              </div>
+
+              <div style={{ overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: 5 }}>
+                {events.length === 0 && (
+                  <div style={{ color: '#64748b', fontSize: 12.5, padding: 24, textAlign: 'center' }}>
+                    시뮬레이션 시작 또는 기습 버스트 발사를 누르면 실시간 요청이 기록됩니다.
+                  </div>
+                )}
+
+                {events.map((ev) => {
+                  const isSelected = inspectedEvent?.id === ev.id;
+                  return (
+                    <div
+                      key={ev.id}
+                      className="pg-stream-row"
+                      onClick={() => setSelectedEvent(ev)}
+                      style={{
+                        background: isSelected ? '#172033' : '#0f172a',
+                        border: isSelected ? '1px solid #38bdf8' : '1px solid #1e293b',
+                      }}
+                    >
+                      <StatusBadge event={ev} />
+                      <code
                         style={{
-                          fontSize: 11,
-                          fontWeight: 700,
-                          padding: '2px 6px',
-                          borderRadius: 4,
-                          background: badgeColor + '22',
-                          color: badgeColor,
+                          fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+                          fontSize: 12,
+                          color: '#f8fafc',
+                          fontWeight: 600,
+                          minWidth: 0,
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
                         }}
                       >
-                        {badgeText}
-                      </span>
-                      <code style={{ fontSize: 13, color: '#f8fafc', fontWeight: 600 }}>
                         {ev.method} {ev.path}
                       </code>
-                      <span style={{ fontSize: 12, color: '#94a3b8' }}>by {ev.actor}</span>
+                      <div className="pg-stream-meta">
+                        <span style={{ fontSize: 11.5, color: '#94a3b8', whiteSpace: 'nowrap' }}>{ev.actor}</span>
+                        <span
+                          style={{
+                            fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+                            fontSize: 11,
+                            color: '#64748b',
+                            fontVariantNumeric: 'tabular-nums',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {formatTimeMs(ev.timestamp)} · {ev.latencyMs}ms
+                        </span>
+                      </div>
                     </div>
-                    <div style={{ fontSize: 12, color: '#cbd5e1', marginTop: 4 }}>{ev.detail}</div>
-                  </div>
-                  <span style={{ fontSize: 11, color: '#64748b', whiteSpace: 'nowrap', textAlign: 'right' }}>
-                    <div>{formatTimeMs(ev.timestamp)}</div>
-                    <div>{ev.latencyMs}ms</div>
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        </section>
-
-        {/* Right: Case Inspector & Code Diff */}
-        <section
-          style={{
-            background: '#111827',
-            border: '1px solid #1f2937',
-            borderRadius: 10,
-            padding: 16,
-            height: 410,
-            overflowY: 'auto',
-          }}
-        >
-          <strong style={{ fontSize: 14, color: '#f3f4f6', display: 'block', marginBottom: 12 }}>
-            🔍 케이스 인스펙터 & 방어 코드 비교 (Module 1: BOLA / IDOR)
-          </strong>
-
-          {selectedEvent ? (
-            <div style={{ marginBottom: 16, padding: 12, background: '#0f172a', borderRadius: 8, fontSize: 12 }}>
-              <div style={{ color: '#38bdf8', fontWeight: 700, marginBottom: 6 }}>
-                선택된 이벤트: {selectedEvent.method} {selectedEvent.path} ({selectedEvent.actor})
+                  );
+                })}
               </div>
-              <div style={{ color: '#cbd5e1', lineHeight: 1.6 }}>
-                • <b>요청 헤더 요약</b>: <code>{selectedEvent.payloadSummary}</code>
-                <br />• <b>Edge WAF 판정</b>: <code>{selectedEvent.wafAction}</code> (문법적으로 정상인 조회 요청이므로 WAF는 통과시킴)
-                <br />• <b>AppSec 최종 결과</b>: <code>{selectedEvent.appAction}</code> (HTTP {selectedEvent.statusCode})
+            </section>
+
+            {/* Right: 4-Stage Execution Waterfall + Actionable Remediation + Code Diff */}
+            <section
+              className="pg-inspector-panel"
+              style={{
+                background: '#111827',
+                border: '1px solid #1e293b',
+                borderRadius: 10,
+                padding: isCompactView ? 12 : 14,
+                overflowY: 'auto',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 10,
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 11.5, fontWeight: 700, color: '#94a3b8', letterSpacing: '0.04em' }}>
+                  EXECUTION WATERFALL &amp; PATCH DIFF
+                </span>
+                {defenseMode !== 'v0.3-patched' && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await switchMode('v0.3-patched');
+                      setTimeout(() => void triggerAttackBurst(), 150);
+                    }}
+                    style={{
+                      padding: '3px 9px',
+                      borderRadius: 6,
+                      border: '1px solid rgba(56, 189, 248, 0.45)',
+                      background: 'rgba(56, 189, 248, 0.14)',
+                      color: '#38bdf8',
+                      fontSize: 11,
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    v0.3 패치로 즉시 재검증
+                  </button>
+                )}
               </div>
-            </div>
-          ) : null}
 
-          <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>
-            <b>핵심 원인 & 해결 (apps/api/src/routes/orders.ts)</b>: 인증(로그인 여부)만 체크하고 객체 소유권(<code>order.userId === user.id</code>)을 확인하지 않아 발생.
-          </div>
+              <ExecutionWaterfall event={inspectedEvent} defenseMode={defenseMode} />
 
-          <pre
-            style={{
-              background: '#090d16',
-              padding: 14,
-              borderRadius: 8,
-              border: '1px solid #1e293b',
-              fontSize: 12,
-              lineHeight: 1.55,
-              overflowX: 'auto',
-              color: '#e2e8f0',
-              margin: 0,
-            }}
-          >
+              <pre
+                style={{
+                  background: '#070b12',
+                  padding: '10px 12px',
+                  borderRadius: 8,
+                  border: '1px solid #1e293b',
+                  fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+                  fontSize: 11.5,
+                  lineHeight: 1.5,
+                  overflowX: 'auto',
+                  color: '#e2e8f0',
+                  margin: 0,
+                }}
+              >
 {`// apps/api/src/routes/orders.ts
-ordersRouter.get('/:orderId', (req, res) => {
-  const user = store.findUserByToken(req.headers.authorization);
-  if (!user) return res.status(401).json({ error: 'Unauthorized' });
-
-  const order = store.getOrderById(Number(req.params.orderId));
-  if (!order) return res.status(404).json({ error: 'Order not found' });
-
-- // [v0.1 Vulnerable] 로그인만 되어 있으면 남의 주문서도 그대로 반환!
+- // [v0.1/v0.2] 인증만 확인하고 소유권 검증 누락
 - return res.json(order);
 
-+ // [v0.3 Patched] 객체 수준 소유권 인가(Object-Level Authorization) 검증
-+ // 존재 여부 열거(Enumeration) 방지를 위해 403 대신 404 반환
++ // [v0.3 Patched] 객체 소유권 인가 + 존재 은폐(404)
 + if (order.userId !== user.id) {
 +   return res.status(404).json({ error: 'Order not found' });
 + }
-+ return res.json(order);
-});`}
-          </pre>
-        </section>
-      </div>
++ return res.json(order);`}
+              </pre>
+            </section>
+          </div>
+        </>
+      )}
     </div>
   );
 }
 
-function MetricCard({
-  title,
+function ExecutionWaterfall({
+  event,
+  defenseMode,
+}: {
+  event: TrafficEvent | null;
+  defenseMode: DefenseMode;
+}) {
+  const isNormal = event ? event.actorType === 'normal' : false;
+  const activeMode = event?.defenseMode ?? defenseMode;
+  const isPatched = event ? event.appAction === 'BLOCKED_GUARD' : activeMode === 'v0.3-patched';
+
+  const steps = isNormal
+    ? [
+        { num: '1 · GATEWAY', name: 'API 수신', status: 'AUTH OK', color: '#34d399', border: 'rgba(16,185,129,0.4)' },
+        { num: '2 · L1 WAF', name: '경계 검사', status: 'PASS', color: '#34d399', border: 'rgba(16,185,129,0.4)' },
+        { num: '3 · L2 GUARD', name: '소유권 인가', status: 'OWNER MATCH', color: '#34d399', border: 'rgba(16,185,129,0.4)' },
+        { num: '4 · VAULT', name: '정상 응답', status: 'HTTP 200', color: '#34d399', border: 'rgba(16,185,129,0.4)' },
+      ]
+    : [
+        { num: '1 · GATEWAY', name: 'API 수신', status: 'AUTH OK', color: '#34d399', border: 'rgba(16,185,129,0.4)' },
+        {
+          num: '2 · L1 WAF',
+          name: '경계 검사',
+          status: activeMode === 'v0.1-vulnerable' ? 'BYPASSED' : 'PASS (정상문법)',
+          color: '#fbbf24',
+          border: 'rgba(245,158,11,0.45)',
+        },
+        {
+          num: '3 · L2 GUARD',
+          name: '소유권 인가',
+          status: isPatched ? 'BLOCKED (404)' : 'MISSING CHECK',
+          color: isPatched ? '#38bdf8' : '#fda4af',
+          border: isPatched ? 'rgba(56,189,248,0.55)' : 'rgba(244,63,94,0.5)',
+        },
+        {
+          num: '4 · VAULT',
+          name: '데이터 보호',
+          status: isPatched ? '0 LEAKED' : 'PII LEAKED',
+          color: isPatched ? '#34d399' : '#fda4af',
+          border: isPatched ? 'rgba(16,185,129,0.4)' : 'rgba(244,63,94,0.5)',
+        },
+      ];
+
+  return (
+    <div className="pg-waterfall">
+      {steps.map((s) => (
+        <div
+          key={s.num}
+          style={{
+            padding: '7px 8px',
+            borderRadius: 7,
+            background: '#0f172a',
+            border: `1px solid ${s.border}`,
+          }}
+        >
+          <div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{s.num}</div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#f1f5f9', marginTop: 2 }}>{s.name}</div>
+          <div
+            style={{
+              fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+              fontSize: 10,
+              fontWeight: 700,
+              color: s.color,
+              marginTop: 3,
+            }}
+          >
+            {s.status}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function KpiRowCard({
+  label,
   value,
   sub,
   color,
+  sparkPoints,
+  badge,
 }: {
-  title: string;
+  label: string;
   value: string;
   sub: string;
   color: string;
+  sparkPoints?: string;
+  badge?: string;
 }) {
   return (
     <div
       style={{
         background: '#111827',
-        border: '1px solid #1f2937',
+        border: '1px solid #1e293b',
         borderRadius: 10,
-        padding: '14px 16px',
+        padding: '10px 13px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 10,
       }}
     >
-      <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 6 }}>{title}</div>
-      <div style={{ fontSize: 22, fontWeight: 800, color }}>{value}</div>
-      <div style={{ fontSize: 11, color: '#cbd5e1', marginTop: 4 }}>{sub}</div>
+      <div>
+        <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 600 }}>{label}</div>
+        <div style={{ fontSize: 19, fontWeight: 800, color, fontVariantNumeric: 'tabular-nums', marginTop: 2 }}>
+          {value}
+        </div>
+        <div style={{ fontSize: 10.5, color: '#64748b', marginTop: 2 }}>{sub}</div>
+      </div>
+
+      {sparkPoints ? (
+        <svg width="58" height="26" viewBox="0 0 60 26" style={{ flexShrink: 0 }}>
+          <polyline fill="none" stroke={color} strokeWidth="2" points={sparkPoints} />
+        </svg>
+      ) : badge ? (
+        <span
+          style={{
+            fontSize: 10.5,
+            fontWeight: 700,
+            color,
+            padding: '3px 8px',
+            borderRadius: 999,
+            border: '1px solid #1e293b',
+            background: '#0f172a',
+            fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {badge}
+        </span>
+      ) : null}
     </div>
   );
 }
